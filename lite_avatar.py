@@ -17,7 +17,8 @@ from tqdm import tqdm
 import torch
 from scipy.interpolate import interp1d
 import wave
-
+import shutil
+import subprocess
 
 def geneHeadInfo(sampleRate, bits, sampleNum):
     import struct
@@ -41,8 +42,8 @@ class liteAvatar(object):
                  num_threads=1,
                  use_bg_as_idle=False,
                  fps=30,
-                 generate_offline=False,
-                 use_gpu=False):
+                 generate_offline=True,
+                 use_gpu=True):
         
         logger.info('liteAvatar init start...')
         
@@ -218,7 +219,6 @@ class liteAvatar(object):
                 tmp_list.append(param_res[ii][key])
             tmp_list = np.asarray(tmp_list)
             
-            
             x = np.linspace(0, old_len - 1, num=old_len, endpoint=True)
             newx = np.linspace(0, old_len - 1, num=new_len, endpoint=True)
             f = interp1d(x, tmp_list)
@@ -330,25 +330,38 @@ class liteAvatar(object):
         for p in self.threads_prep:
             p.join()
         
-        cmd = '/usr/bin/ffmpeg -r 30 -i {}/%05d.jpg -i {} -framerate 30 -c:v libx264 -pix_fmt yuv420p -b:v 5000k -strict experimental -loglevel error {}/test_demo.mp4 -y'.format(tmp_frame_dir, audio_file_path, result_dir)
-        os.system(cmd)
+        logger.info(f"Result dir: {result_dir}, exists: {os.path.exists(result_dir)}")
+        logger.info(f"tmp_frames dir: {tmp_frame_dir}, exists: {os.path.exists(tmp_frame_dir)}")
+        tmp_frames_files = os.listdir(tmp_frame_dir) if os.path.exists(tmp_frame_dir) else []
+        logger.info(f"tmp_frames contents: {', '.join(tmp_frames_files)}")
+        ffmpeg_path = shutil.which('ffmpeg')
+        logger.info(f"ffmpeg path: {ffmpeg_path}")
+        if ffmpeg_path is None:
+            logger.error("ffmpeg not found in PATH")
+            raise FileNotFoundError("ffmpeg not found in PATH")
+        
+        output_video = os.path.join(result_dir, 'test_demo.mp4')
+        cmd = f'"{ffmpeg_path}" -r 30 -i "{tmp_frame_dir}/%05d.jpg" -i "{audio_file_path}" -framerate 30 -c:v libx264 -pix_fmt yuv420p -b:v 5000k -strict experimental -loglevel error "{output_video}" -y'
+        logger.info(f"Running ffmpeg command: {cmd}")
+        try:
+            subprocess.run(cmd, shell=True, check=True)
+            logger.info(f"Generated video: {output_video}, exists: {os.path.exists(output_video)}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"ffmpeg failed: {e}")
+            raise
     
     @staticmethod
     def read_wav_to_bytes(file_path):
         try:
-            # 打开WAV文件
             with wave.open(file_path, 'rb') as wav_file:
-                # 获取WAV文件的参数
                 params = wav_file.getparams()
                 print(f"Channels: {params.nchannels}, Sample Width: {params.sampwidth}, Frame Rate: {params.framerate}, Number of Frames: {params.nframes}")
-                
-                # 读取所有帧
                 frames = wav_file.readframes(params.nframes)
                 return frames
         except wave.Error as e:
             print(f"Error reading WAV file: {e}")
             return None
-        
+    
 
 if __name__ == '__main__':
     
@@ -365,4 +378,3 @@ if __name__ == '__main__':
     lite_avatar = liteAvatar(data_dir=args.data_dir, num_threads=1, generate_offline=True)
     
     lite_avatar.handle(audio_file, tmp_frame_dir)
-    
