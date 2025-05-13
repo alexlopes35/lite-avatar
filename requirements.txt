@@ -89,7 +89,7 @@ torch-complex
 torchaudio==2.3.1
 torchvision==0.18.1
 tqdm
-typeguard==3.0.2
+typeguard==2.13.3
 typing_extensions
 umap-learn
 urllib3
