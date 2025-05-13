@@ -117,8 +117,8 @@ class liteAvatar(object):
         self.y1,self.y2,self.x1,self.x2 = int(y1),int(y2),int(x1),int(x2)
         
         self.merge_mask = (np.ones((self.y2-self.y1,self.x2-self.x1,3)) * 255).astype(np.uint8)
-        self.merge_mask[10:-10,10:-10,:] *= 0
-        self.merge_mask = cv2.GaussianBlur(self.merge_mask, (21,21), 15)
+        self.merge_mask[20:-20,20:-20,:] *= 0
+        self.merge_mask = cv2.GaussianBlur(self.merge_mask, (31,31), 20)
         self.merge_mask = self.merge_mask / 255
         
         self.frame_vid_list = []
@@ -131,19 +131,32 @@ class liteAvatar(object):
         logger.info("load data sync in {:.3f}s", time.time() - t)
     
     def load_data(self, data_dir, bg_frame_cnt=None):
-        
         logger.info(f'loading data from {data_dir}')
         s = time.time()
 
         self.ref_img_list = []
-        for ii in tqdm(range(bg_frame_cnt)):
-            img_file_path = os.path.join(f'{data_dir}', 'ref_frames', f'ref_{ii:05d}.jpg')
-            image = cv2.cvtColor(cv2.imread(img_file_path)[:,:,0:3],cv2.COLOR_BGR2RGB)
-            image = cv2.resize(image, (384, 384), interpolation=cv2.INTER_LINEAR)
+        user_image_path = os.path.join(data_dir, 'image.png')
+        if os.path.exists(user_image_path):
+            logger.info(f'Using user-uploaded image: {user_image_path}')
+            image = cv2.cvtColor(cv2.imread(user_image_path)[:,:,0:3], cv2.COLOR_BGR2RGB)
+            image = cv2.resize(image, (512, 512), interpolation=cv2.INTER_LINEAR)
             ref_img = self.image_transforms(np.uint8(image))
             encoder_input = ref_img.unsqueeze(0).float().to(self.device)
             x = self.encoder(encoder_input)
-            self.ref_img_list.append(x)
+            self.ref_img_list = [x] * (bg_frame_cnt or 150)
+        else:
+            logger.warning(f'No user image found at {user_image_path}, using ref_frames')
+            for ii in tqdm(range(bg_frame_cnt or 150)):
+                img_file_path = os.path.join(data_dir, 'ref_frames', f'ref_{ii:05d}.jpg')
+                if not os.path.exists(img_file_path):
+                    logger.error(f'Reference frame not found: {img_file_path}')
+                    continue
+                image = cv2.cvtColor(cv2.imread(img_file_path)[:,:,0:3], cv2.COLOR_BGR2RGB)
+                image = cv2.resize(image, (512, 512), interpolation=cv2.INTER_LINEAR)
+                ref_img = self.image_transforms(np.uint8(image))
+                encoder_input = ref_img.unsqueeze(0).float().to(self.device)
+                x = self.encoder(encoder_input)
+                self.ref_img_list.append(x)
         
         logger.info(f'load data over in {time.time() - s}s')
     
@@ -176,7 +189,6 @@ class liteAvatar(object):
             out_queue.put(None)
             
     def param2img(self, param_res, bg_frame_id, global_frame_id=0, is_idle=False):
-
         param_val = []
         for key in param_res:
             val = param_res[key]
@@ -200,7 +212,7 @@ class liteAvatar(object):
         mouth_image = mouth_image[0].permute(1,2,0)*255
         
         mouth_image = mouth_image.numpy().astype(np.uint8)
-        mouth_image = cv2.resize(mouth_image, (self.x2-self.x1, self.y2-self.y1))
+        mouth_image = cv2.resize(mouth_image, (self.x2-self.x1, self.y2-self.y1), interpolation=cv2.INTER_LANCZOS4)
         mouth_image = mouth_image[:,:,::-1]
         full_img = self.bg_data_list[bg_frame_id].copy()
         if not use_bg:
@@ -259,15 +271,21 @@ class liteAvatar(object):
         return param_res
     
     def audio2param(self, input_audio_byte, prefix_padding_size=0, is_complete=False, audio_status=-1):
-        headinfo = geneHeadInfo(16000, 16, len(input_audio_byte))
-        input_audio_byte = headinfo + input_audio_byte
         input_audio, sr = sf.read(BytesIO(input_audio_byte))
+        if sr != 22050:
+            logger.warning(f"Input audio sample rate {sr} Hz, expected 22050 Hz, resampling")
+            input_audio = librosa.resample(input_audio, orig_sr=sr, target_sr=22050)
+            sr = 22050
+        headinfo = geneHeadInfo(sr, 16, len(input_audio_byte))
+        input_audio_byte = headinfo + input_audio_byte
+        
+        input_audio = input_audio / np.max(np.abs(input_audio))
         
         param_res, _, _ = self.audio2mouth.inference(subtitles=None, input_audio=input_audio)
         
         sil_scale = np.zeros(len(param_res))
-        sound = AudioSegment.from_raw(BytesIO(input_audio_byte), sample_width=2, frame_rate=16000, channels=1)
-        start_end_list = detect_silence(sound, 500, -50)
+        sound = AudioSegment.from_raw(BytesIO(input_audio_byte), sample_width=2, frame_rate=sr, channels=1)
+        start_end_list = detect_silence(sound, min_silence_len=300, silence_thresh=-40)
         if len(start_end_list) > 0:
             for start, end in start_end_list:
                 start_frame = int(start / 1000 * 30)
@@ -275,7 +293,7 @@ class liteAvatar(object):
                 logger.info(f'silence part: {start_frame}-{end_frame} frames')
                 sil_scale[start_frame:end_frame] = 1
         sil_scale = np.pad(sil_scale, 2, mode='edge')
-        kernel = np.array([0.1,0.2,0.4,0.2,0.1])
+        kernel = np.array([0.05,0.15,0.6,0.15,0.05])
         sil_scale = np.convolve(sil_scale, kernel, 'same')
         sil_scale = sil_scale[2:-2]
         self.make_silence(param_res, sil_scale)
@@ -297,7 +315,6 @@ class liteAvatar(object):
         return param_res
     
     def handle(self, audio_file_path, result_dir, param_res=None):
-        
         audio_data = self.read_wav_to_bytes(audio_file_path)
         
         if param_res is None:
@@ -341,7 +358,7 @@ class liteAvatar(object):
             raise FileNotFoundError("ffmpeg not found in PATH")
         
         output_video = os.path.join(result_dir, 'test_demo.mp4')
-        cmd = f'"{ffmpeg_path}" -r 30 -i "{tmp_frame_dir}/%05d.jpg" -i "{audio_file_path}" -framerate 30 -c:v libx264 -pix_fmt yuv420p -b:v 5000k -strict experimental -loglevel error "{output_video}" -y'
+        cmd = f'"{ffmpeg_path}" -r 30 -i "{tmp_frame_dir}/%05d.jpg" -i "{audio_file_path}" -framerate 30 -c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p -b:v 8000k -c:a aac -b:a 192k -strict experimental -loglevel error "{output_video}" -y'
         logger.info(f"Running ffmpeg command: {cmd}")
         try:
             subprocess.run(cmd, shell=True, check=True)
@@ -361,10 +378,9 @@ class liteAvatar(object):
         except wave.Error as e:
             print(f"Error reading WAV file: {e}")
             return None
-    
+        
 
 if __name__ == '__main__':
-    
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_dir', type=str)
