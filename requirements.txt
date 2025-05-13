@@ -47,7 +47,7 @@ multidict
 multiprocess
 networkx
 numba
-numpy
+numpy==1.26.4
 omegaconf
 onnxruntime
 openai-whisper
@@ -89,7 +89,6 @@ torch-complex
 torchaudio==2.3.1
 torchvision==0.18.1
 tqdm
-triton
 typeguard==3.0.2
 typing_extensions
 umap-learn
