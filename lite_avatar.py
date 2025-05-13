@@ -1,26 +1,26 @@
 import os
-   import numpy as np
-   import cv2
-   import json
-   import time
-   import librosa
-   import threading
-   import queue
-   from loguru import logger
-   import base64
-   import soundfile as sf
-   from io import BytesIO
-   from pydub import AudioSegment
-   from pydub.silence import detect_silence
-   from torchvision import transforms
-   from tqdm import tqdm
-   import torch
-   from scipy.interpolate import interp1d
-   import wave
-   import shutil
-   import subprocess
+import numpy as np
+import cv2
+import json
+import time
+import librosa
+import threading
+import queue
+from loguru import logger
+import base64
+import soundfile as sf
+from io import BytesIO
+from pydub import AudioSegment
+from pydub.silence import detect_silence
+from torchvision import transforms
+from tqdm import tqdm
+import torch
+from scipy.interpolate import interp1d
+import wave
+import shutil
+import subprocess
 
-   def geneHeadInfo(sampleRate, bits, sampleNum):
+def geneHeadInfo(sampleRate, bits, sampleNum):
        import struct
        rHeadInfo = b'\x52\x49\x46\x46'
        fileLength = struct.pack('i', sampleNum + 36)
@@ -34,7 +34,7 @@ import os
        rHeadInfo += struct.pack('i', sampleNum)
        return rHeadInfo
 
-   class liteAvatar(object):
+class liteAvatar(object):
        def __init__(self,
                     data_dir=None,
                     language='ZH',
@@ -378,7 +378,7 @@ import os
                return None
        
 
-   if __name__ == '__main__':
+if __name__ == '__main__':
        import argparse
        parser = argparse.ArgumentParser()
        parser.add_argument('--data_dir', type=str)
