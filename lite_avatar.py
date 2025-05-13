@@ -270,8 +270,8 @@ class liteAvatar(object):
            param_res = param_res + padding_list
            return param_res
        
-       def audio2param(self, input_audio_byte, prefix_padding_size=0, is_complete=False, audio_status=-1):
-           input_audio, sr = sf.read(BytesIO(input_audio_byte))
+       def audio2param(self, audio_file_path, prefix_padding_size=0, is_complete=False, audio_status=-1):
+           input_audio, sr = sf.read(audio_file_path)
            if sr != 22050:
                logger.warning(f"Input audio sample rate {sr} Hz, expected 22050 Hz, resampling")
                input_audio = librosa.resample(input_audio, orig_sr=sr, target_sr=22050)
@@ -282,7 +282,7 @@ class liteAvatar(object):
            param_res, _, _ = self.audio2mouth.inference(subtitles=None, input_audio=input_audio)
            
            sil_scale = np.zeros(len(param_res))
-           sound = AudioSegment.from_raw(BytesIO(input_audio_byte), sample_width=2, frame_rate=sr, channels=1)
+           sound = AudioSegment.from_file(audio_file_path, format="wav")
            start_end_list = detect_silence(sound, min_silence_len=300, silence_thresh=-40)
            if len(start_end_list) > 0:
                for start, end in start_end_list:
@@ -313,10 +313,8 @@ class liteAvatar(object):
            return param_res
        
        def handle(self, audio_file_path, result_dir, param_res=None):
-           audio_data = self.read_wav_to_bytes(audio_file_path)
-           
            if param_res is None:
-               param_res = self.audio2param(audio_data)
+               param_res = self.audio2param(audio_file_path)
            
            for ii in range(len(param_res)):
                s = time.time()
