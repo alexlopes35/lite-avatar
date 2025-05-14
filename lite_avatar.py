@@ -279,16 +279,24 @@ class liteAvatar(object):
                    full_img = cv2.cvtColor(cv2.imread(user_image_path)[:,:,0:3], cv2.COLOR_BGR2RGB)
                    # Resize to 512x512
                    full_img = cv2.resize(full_img, (512, 512), interpolation=cv2.INTER_LANCZOS4)
-                   # Scale face box coordinates
+                   # Scale and cap face box coordinates
                    scale_y = 512 / self.original_height
                    scale_x = 512 / self.original_width
                    y1_scaled = int(self.y1 * scale_y)
                    y2_scaled = int(self.y2 * scale_y)
                    x1_scaled = int(self.x1 * scale_x)
                    x2_scaled = int(self.x2 * scale_x)
-                   logger.info(f"Scaled face box: y1={y1_scaled}, y2={y2_scaled}, x1={x1_scaled}, x2={x2_scaled}, height={y2_scaled-y1_scaled}, width={x2_scaled-x1_scaled}")
+                   # Cap coordinates within 512x512
+                   y1_scaled = max(0, min(511, y1_scaled))
+                   y2_scaled = max(y1_scaled + 1, min(512, y2_scaled))
+                   x1_scaled = max(0, min(511, x1_scaled))
+                   x2_scaled = max(x1_scaled + 1, min(512, x2_scaled))
+                   logger.info(f"Adjusted face box: y1={y1_scaled}, y2={y2_scaled}, x1={x1_scaled}, x2={x2_scaled}, height={y2_scaled-y1_scaled}, width={x2_scaled-x1_scaled}")
                    logger.info(f"full_img region shape: {full_img[y1_scaled:y2_scaled, x1_scaled:x2_scaled, :].shape}")
-                   full_img[y1_scaled:y2_scaled, x1_scaled:x2_scaled, :] = mouth_image * (1 - self.merge_mask) + full_img[y1_scaled:y2_scaled, x1_scaled:x2_scaled, :] * self.merge_mask
+                   # Resize mouth_image and merge_mask to match adjusted region
+                   mouth_image_resized = cv2.resize(mouth_image, (x2_scaled - x1_scaled, y2_scaled - y1_scaled), interpolation=cv2.INTER_LANCZOS4)
+                   merge_mask_resized = cv2.resize(self.merge_mask, (x2_scaled - x1_scaled, y2_scaled - y1_scaled), interpolation=cv2.INTER_LANCZOS4)
+                   full_img[y1_scaled:y2_scaled, x1_scaled:x2_scaled, :] = mouth_image_resized * (1 - merge_mask_resized) + full_img[y1_scaled:y2_scaled, x1_scaled:x2_scaled, :] * merge_mask_resized
                else:
                    full_img = self.bg_data_list[bg_frame_id].copy()
            else:
