@@ -143,8 +143,11 @@ class liteAvatar(object):
                ref_img = self.image_transforms(np.uint8(image))
                encoder_input = ref_img.unsqueeze(0).float().to(self.device)
                x = self.encoder(encoder_input)
-               # Use the uploaded image embedding for all frames
-               self.ref_img_list = [x.clone() for _ in range(bg_frame_cnt or 150)]
+               # Ensure x is a tensor before cloning
+               if isinstance(x, torch.Tensor):
+                   self.ref_img_list = [x.clone() for _ in range(bg_frame_cnt or 150)]
+               else:
+                   logger.error(f"Encoder output x is not a tensor: {type(x)}")
            else:
                logger.warning(f'No user image found at {user_image_path}, using ref_frames')
                for ii in tqdm(range(bg_frame_cnt or 150)):
