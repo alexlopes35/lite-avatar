@@ -139,11 +139,12 @@ class liteAvatar(object):
            if os.path.exists(user_image_path):
                logger.info(f'Using user-uploaded image: {user_image_path}')
                image = cv2.cvtColor(cv2.imread(user_image_path)[:,:,0:3], cv2.COLOR_BGR2RGB)
-               image = cv2.resize(image, (512, 512), interpolation=cv2.INTER_LINEAR)
+               image = cv2.resize(image, (512, 512), interpolation=cv2.INTER_LANCZOS4)
                ref_img = self.image_transforms(np.uint8(image))
                encoder_input = ref_img.unsqueeze(0).float().to(self.device)
                x = self.encoder(encoder_input)
-               self.ref_img_list = [x] * (bg_frame_cnt or 150)
+               # Use the uploaded image embedding for all frames
+               self.ref_img_list = [x.clone() for _ in range(bg_frame_cnt or 150)]
            else:
                logger.warning(f'No user image found at {user_image_path}, using ref_frames')
                for ii in tqdm(range(bg_frame_cnt or 150)):
@@ -152,7 +153,7 @@ class liteAvatar(object):
                        logger.error(f'Reference frame not found: {img_file_path}')
                        continue
                    image = cv2.cvtColor(cv2.imread(img_file_path)[:,:,0:3], cv2.COLOR_BGR2RGB)
-                   image = cv2.resize(image, (512, 512), interpolation=cv2.INTER_LINEAR)
+                   image = cv2.resize(image, (512, 512), interpolation=cv2.INTER_LANCZOS4)
                    ref_img = self.image_transforms(np.uint8(image))
                    encoder_input = ref_img.unsqueeze(0).float().to(self.device)
                    x = self.encoder(encoder_input)
@@ -178,7 +179,7 @@ class liteAvatar(object):
                global_frame_id = data[2]
                
                mouth_img = self.param2img(param_res, bg_frame_id)
-               full_img, mouth_img = self.merge_mouth_to_bg(mouth_img, bg_frame_id)
+               full_img, mouth_img = self.merge_mouth_to_bg(mouth_img, bg_frame_id, use_photo=True)
                
                logger.info('global_frame_id: {} in {}s'.format(global_frame_id, round(time.time() - s, 3)))
                
@@ -207,15 +208,26 @@ class liteAvatar(object):
                tmp_json[str(ii)] = float(bg_param[ii])
            return tmp_json
        
-       def merge_mouth_to_bg(self, mouth_image, bg_frame_id, use_bg=False):
+       def merge_mouth_to_bg(self, mouth_image, bg_frame_id, use_photo=False):
            mouth_image = (mouth_image / 2 + 0.5).clamp(0, 1)
            mouth_image = mouth_image[0].permute(1,2,0)*255
            
            mouth_image = mouth_image.numpy().astype(np.uint8)
            mouth_image = cv2.resize(mouth_image, (self.x2-self.x1, self.y2-self.y1), interpolation=cv2.INTER_LANCZOS4)
            mouth_image = mouth_image[:,:,::-1]
-           full_img = self.bg_data_list[bg_frame_id].copy()
-           if not use_bg:
+           
+           if use_photo:
+               user_image_path = os.path.join(self.data_dir, 'image.png')
+               if os.path.exists(user_image_path):
+                   full_img = cv2.cvtColor(cv2.imread(user_image_path)[:,:,0:3], cv2.COLOR_BGR2RGB)
+                   full_img = cv2.resize(full_img, (512, 512), interpolation=cv2.INTER_LANCZOS4)
+                   full_img[self.y1:self.y2, self.x1:self.x2, :] = mouth_image * (1 - self.merge_mask) + full_img[self.y1:self.y2, self.x1:self.x2, :] * self.merge_mask
+               else:
+                   full_img = self.bg_data_list[bg_frame_id].copy()
+           else:
+               full_img = self.bg_data_list[bg_frame_id].copy()
+           
+           if not use_photo:
                full_img[self.y1:self.y2,self.x1:self.x2,:] = mouth_image * (1 - self.merge_mask) + full_img[self.y1:self.y2,self.x1:self.x2,:] * self.merge_mask
            full_img = full_img.astype(np.uint8)
            return full_img, mouth_image.astype(np.uint8)
@@ -278,12 +290,13 @@ class liteAvatar(object):
                sr = 22050
            
            input_audio = input_audio / np.max(np.abs(input_audio))
+           input_audio = librosa.effects.preemphasis(input_audio, coef=0.97)  # Enhance audio
            
            param_res, _, _ = self.audio2mouth.inference(subtitles=None, input_audio=input_audio)
            
            sil_scale = np.zeros(len(param_res))
            sound = AudioSegment.from_file(audio_file_path, format="wav")
-           start_end_list = detect_silence(sound, min_silence_len=300, silence_thresh=-40)
+           start_end_list = detect_silence(sound, min_silence_len=200, silence_thresh=-35)
            if len(start_end_list) > 0:
                for start, end in start_end_list:
                    start_frame = int(start / 1000 * 30)
@@ -291,7 +304,7 @@ class liteAvatar(object):
                    logger.info(f'silence part: {start_frame}-{end_frame} frames')
                    sil_scale[start_frame:end_frame] = 1
            sil_scale = np.pad(sil_scale, 2, mode='edge')
-           kernel = np.array([0.05,0.15,0.6,0.15,0.05])
+           kernel = np.array([0.1, 0.2, 0.4, 0.2, 0.1])
            sil_scale = np.convolve(sil_scale, kernel, 'same')
            sil_scale = sil_scale[2:-2]
            self.make_silence(param_res, sil_scale)
@@ -354,7 +367,7 @@ class liteAvatar(object):
                raise FileNotFoundError("ffmpeg not found in PATH")
            
            output_video = os.path.join(result_dir, 'test_demo.mp4')
-           cmd = f'"{ffmpeg_path}" -r 30 -i "{tmp_frame_dir}/%05d.jpg" -i "{audio_file_path}" -framerate 30 -c:v libx264 -preset slow -crf 18 -pix_fmt yuv420p -b:v 8000k -c:a aac -b:a 192k -strict experimental -loglevel error "{output_video}" -y'
+           cmd = f'"{ffmpeg_path}" -r 30 -i "{tmp_frame_dir}/%05d.jpg" -i "{audio_file_path}" -framerate 30 -c:v libx264 -preset veryslow -crf 16 -pix_fmt yuv420p -b:v 12000k -c:a aac -b:a 256k -strict experimental -loglevel error "{output_video}" -y'
            logger.info(f"Running ffmpeg command: {cmd}")
            try:
                subprocess.run(cmd, shell=True, check=True)
