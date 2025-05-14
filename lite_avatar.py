@@ -145,10 +145,16 @@ class liteAvatar(object):
                x = self.encoder(encoder_input)
                logger.info(f"Encoder output type: {type(x)}, shape: {getattr(x, 'shape', 'N/A')}")
                if isinstance(x, torch.Tensor):
-                   self.ref_img_list = [x.clone() for _ in range(bg_frame_cnt or 150)]
+                   logger.warning("Encoder returned a single tensor, replicating to match generator's expected input of 4 tensors")
+                   tensor_list = [x.clone() for _ in range(4)]
+                   self.ref_img_list = [tensor_list for _ in range(bg_frame_cnt or 150)]
+               elif isinstance(x, list) and len(x) == 4 and all(isinstance(t, torch.Tensor) for t in x):
+                   logger.info("Encoder returned a list of 4 tensors, using as is")
+                   self.ref_img_list = [[t.clone() for t in x] for _ in range(bg_frame_cnt or 150)]
                elif isinstance(x, list) and len(x) > 0 and isinstance(x[0], torch.Tensor):
-                   logger.warning("Encoder returned a list of tensors, using first tensor")
-                   self.ref_img_list = [x[0].clone() for _ in range(bg_frame_cnt or 150)]
+                   logger.warning(f"Encoder returned a list of {len(x)} tensors, expected 4, replicating first tensor")
+                   tensor_list = [x[0].clone() for _ in range(4)]
+                   self.ref_img_list = [tensor_list for _ in range(bg_frame_cnt or 150)]
                else:
                    logger.error(f"Invalid encoder output: {type(x)}, falling back to ref_frames")
                    for ii in tqdm(range(bg_frame_cnt or 150)):
@@ -162,7 +168,10 @@ class liteAvatar(object):
                        encoder_input = ref_img.unsqueeze(0).float().to(self.device)
                        x = self.encoder(encoder_input)
                        if isinstance(x, torch.Tensor):
-                           self.ref_img_list.append(x)
+                           tensor_list = [x.clone() for _ in range(4)]
+                           self.ref_img_list.append(tensor_list)
+                       elif isinstance(x, list) and len(x) == 4 and all(isinstance(t, torch.Tensor) for t in x):
+                           self.ref_img_list.append([t.clone() for t in x])
                        else:
                            logger.error(f"Ref frame encoding failed at {ii}: {type(x)}")
            else:
@@ -177,7 +186,13 @@ class liteAvatar(object):
                    ref_img = self.image_transforms(np.uint8(image))
                    encoder_input = ref_img.unsqueeze(0).float().to(self.device)
                    x = self.encoder(encoder_input)
-                   self.ref_img_list.append(x)
+                   if isinstance(x, torch.Tensor):
+                       tensor_list = [x.clone() for _ in range(4)]
+                       self.ref_img_list.append(tensor_list)
+                   elif isinstance(x, list) and len(x) == 4 and all(isinstance(t, torch.Tensor) for t in x):
+                       self.ref_img_list.append([t.clone() for t in x])
+                   else:
+                       logger.error(f"Ref frame encoding failed at {ii}: {type(x)}")
            
            logger.info(f'load data over in {time.time() - s}s')
        
@@ -222,10 +237,8 @@ class liteAvatar(object):
                param_val.append(val)
            param_val = np.asarray(param_val)
            
-           # Wrap the tensor in a list to match the generator's expected input
-           input_tensor = self.ref_img_list[bg_frame_id]
-           logger.info(f"Generator input type: {type(input_tensor)}, shape: {getattr(input_tensor, 'shape', 'N/A')}")
-           input_list = [input_tensor]  # Convert to List[Tensor]
+           input_list = self.ref_img_list[bg_frame_id]  # Now a list of 4 tensors
+           logger.info(f"Generator input list length: {len(input_list)}, types: {[type(t) for t in input_list]}, shapes: {[t.shape for t in input_list]}")
            source_img = self.generator(input_list, torch.from_numpy(param_val).unsqueeze(0).float().to(self.device))
            source_img = source_img.detach().to("cpu")
            
