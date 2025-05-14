@@ -115,11 +115,13 @@ class liteAvatar(object):
            
            y1,y2,x1,x2 = open(f'{data_dir}/face_box.txt', 'r').readlines()[0].split()
            self.y1,self.y2,self.x1,self.x2 = int(y1),int(y2),int(x1),int(x2)
+           logger.info(f"Face box dimensions: y1={self.y1}, y2={self.y2}, x1={self.x1}, x2={self.x2}, height={self.y2-self.y1}, width={self.x2-self.x1}")
            
-           self.merge_mask = (np.ones((self.y2-self.y1,self.x2-self.x1,3)) * 255).astype(np.uint8)
-           self.merge_mask[20:-20,20:-20,:] *= 0
-           self.merge_mask = cv2.GaussianBlur(self.merge_mask, (31,31), 20)
+           self.merge_mask = (np.ones((self.y2-self.y1, self.x2-self.x1, 3)) * 255).astype(np.uint8)
+           self.merge_mask[20:-20, 20:-20, :] *= 0
+           self.merge_mask = cv2.GaussianBlur(self.merge_mask, (31, 31), 20)
            self.merge_mask = self.merge_mask / 255
+           logger.info(f"merge_mask shape: {self.merge_mask.shape}")
            
            self.frame_vid_list = []
            
@@ -257,7 +259,6 @@ class liteAvatar(object):
            
            mouth_image = mouth_image.numpy().astype(np.uint8)
            logger.info(f"mouth_image shape before resize: {mouth_image.shape}")
-           # Resize mouth_image to match the face box dimensions
            mouth_image = cv2.resize(mouth_image, (self.x2 - self.x1, self.y2 - self.y1), interpolation=cv2.INTER_LANCZOS4)
            logger.info(f"mouth_image shape after resize: {mouth_image.shape}")
            mouth_image = mouth_image[:,:,::-1]
@@ -267,6 +268,7 @@ class liteAvatar(object):
                if os.path.exists(user_image_path):
                    full_img = cv2.cvtColor(cv2.imread(user_image_path)[:,:,0:3], cv2.COLOR_BGR2RGB)
                    full_img = cv2.resize(full_img, (512, 512), interpolation=cv2.INTER_LANCZOS4)
+                   logger.info(f"full_img region shape: {full_img[self.y1:self.y2, self.x1:self.x2, :].shape}")
                    full_img[self.y1:self.y2, self.x1:self.x2, :] = mouth_image * (1 - self.merge_mask) + full_img[self.y1:self.y2, self.x1:self.x2, :] * self.merge_mask
                else:
                    full_img = self.bg_data_list[bg_frame_id].copy()
