@@ -44,42 +44,33 @@ class liteAvatar(object):
                     fps=30,
                     generate_offline=True,
                     use_gpu=True):
-           
            logger.info('liteAvatar init start...')
-           
            self.data_dir = data_dir
            self.fps = fps
            self.use_bg_as_idle = use_bg_as_idle
            self.use_gpu = use_gpu
            self.device = "cuda" if use_gpu else "cpu"
-           
            s = time.time()
            from audio2mouth_cpu import Audio2Mouth
-           
            self.audio2mouth = Audio2Mouth(use_gpu)
            logger.info(f'audio2mouth init over in {time.time() - s}s')
-           
            self.p_list = [str(ii) for ii in range(32)]
-           
            self.input_queue = queue.Queue()
            self.output_queue = queue.Queue()
-           self.load_data_thread: threading.Thread = None
-
+           self.load_data_thread = None
            logger.info('liteAvatar init over')
            self._generate_offline = generate_offline
            if generate_offline:
                self.load_dynamic_model(data_dir)
-               
                self.threads_prep = []
                barrier_prep = threading.Barrier(num_threads, action=None, timeout=None)
                for i in range(num_threads):
                    t = threading.Thread(target=self.face_gen_loop, args=(i, barrier_prep, self.input_queue, self.output_queue))
                    self.threads_prep.append(t)
-
                for t in self.threads_prep:
                    t.daemon = True
                    t.start()
-           
+
        def stop_algo(self):
            pass
 
@@ -88,7 +79,6 @@ class liteAvatar(object):
            start_time = time.time()
            self.encoder = torch.jit.load(f'{data_dir}/net_encode.pt').to(self.device)
            self.generator = torch.jit.load(f'{data_dir}/net_decode.pt').to(self.device)
-
            self.load_data_sync(data_dir=data_dir, bg_frame_cnt=150)
            self.load_data(data_dir=data_dir, bg_frame_cnt=150)
            self.ref_data_list = [0 for x in range(150)]
@@ -98,12 +88,11 @@ class liteAvatar(object):
 
        def unload_dynamic_model(self):
            pass
-       
+
        def load_data_sync(self, data_dir, bg_frame_cnt=None):
            t = time.time()
            self.neutral_pose = np.load(f'{data_dir}/neutral_pose.npy')
            self.mouth_scale = None
-       
            self.bg_data_list = []
            bg_video = cv2.VideoCapture(f'{data_dir}/bg_video.mp4')
            while True:
@@ -112,18 +101,14 @@ class liteAvatar(object):
                if ret is False:
                    break
            self.bg_video_frame_count = len(self.bg_data_list) if bg_frame_cnt is None else min(bg_frame_cnt, len(self.bg_data_list))
-           
            y1,y2,x1,x2 = open(f'{data_dir}/face_box.txt', 'r').readlines()[0].split()
            self.y1,self.y2,self.x1,self.x2 = int(y1),int(y2),int(x1),int(x2)
            logger.info(f"Face box dimensions: y1={self.y1}, y2={self.y2}, x1={self.x1}, x2={self.x2}, height={self.y2-self.y1}, width={self.x2-self.x1}")
-           
            self.merge_mask = (np.ones((self.y2-self.y1, self.x2-self.x1, 3)) * 255).astype(np.uint8)
            self.merge_mask[20:-20, 20:-20, :] *= 0
            self.merge_mask = cv2.GaussianBlur(self.merge_mask, (31, 31), 20)
            self.merge_mask = self.merge_mask / 255
            logger.info(f"merge_mask shape: {self.merge_mask.shape}")
-           
-           # Load a sample image to determine original dimensions
            user_image_path = os.path.join(data_dir, 'image.png')
            if os.path.exists(user_image_path):
                image = cv2.imread(user_image_path)[:,:,0:3]
@@ -132,20 +117,16 @@ class liteAvatar(object):
            else:
                logger.warning("No user image found, assuming original dimensions as 1024x1024")
                self.original_height, self.original_width = 1024, 1024
-           
            self.frame_vid_list = []
-           
-           self.image_transforms = transforms.Compose(
-           [   
+           self.image_transforms = transforms.Compose([
                transforms.ToTensor(),
                transforms.Normalize([0.5], [0.5]),
            ])
            logger.info("load data sync in {:.3f}s", time.time() - t)
-       
+
        def load_data(self, data_dir, bg_frame_cnt=None):
            logger.info(f'loading data from {data_dir}')
            s = time.time()
-
            self.ref_img_list = []
            user_image_path = os.path.join(data_dir, 'image.png')
            if os.path.exists(user_image_path):
@@ -205,9 +186,8 @@ class liteAvatar(object):
                        self.ref_img_list.append([t.clone() for t in x])
                    else:
                        logger.error(f"Ref frame encoding failed at {ii}: {type(x)}")
-           
            logger.info(f'load data over in {time.time() - s}s')
-       
+
        def face_gen_loop(self, thread_id, barrier, in_queue, out_queue):
            logger.info(f"Starting face_gen_loop for thread {thread_id}")
            while True:
@@ -217,69 +197,57 @@ class liteAvatar(object):
                except queue.Empty:
                    logger.warning(f"Thread {thread_id} input_queue timeout after 30s")
                    break
-               
                if data is None:
                    logger.info(f"Thread {thread_id} received None, shutting down")
                    in_queue.put(None)
                    break
-               
                s = time.time()
-               
                param_res = data[0]
                bg_frame_id = data[1]
                global_frame_id = data[2]
-               
                logger.info(f"Thread {thread_id} processing frame {global_frame_id}")
                mouth_img = self.param2img(param_res, bg_frame_id)
                full_img, mouth_img = self.merge_mouth_to_bg(mouth_img, bg_frame_id, use_photo=True)
-               
                logger.info(f"Thread {thread_id} processed global_frame_id: {global_frame_id} in {round(time.time() - s, 3)}s")
-               
                out_queue.put((global_frame_id, full_img, mouth_img))
-           
            barrier.wait()
            if thread_id == 0:
                logger.info("Thread 0 putting None to output_queue to signal completion")
                out_queue.put(None)
-               
+
        def param2img(self, param_res, bg_frame_id, global_frame_id=0, is_idle=False):
            param_val = []
            for key in param_res:
                val = param_res[key]
                param_val.append(val)
            param_val = np.asarray(param_val)
-           
            input_list = self.ref_img_list[bg_frame_id]
            logger.info(f"Generator input list length: {len(input_list)}, types: {[type(t) for t in input_list]}, shapes: {[t.shape for t in input_list]}")
            source_img = self.generator(input_list, torch.from_numpy(param_val).unsqueeze(0).float().to(self.device))
            source_img = source_img.detach().to("cpu")
-           
            return source_img
-       
+
        def get_idle_param(self):
            bg_param = self.neutral_pose
            tmp_json = {}
            for ii in range(len(self.p_list)):
                tmp_json[str(ii)] = float(bg_param[ii])
            return tmp_json
-       
+
        def merge_mouth_to_bg(self, mouth_image, bg_frame_id, use_photo=False):
            mouth_image = (mouth_image / 2 + 0.5).clamp(0, 1)
            mouth_image = mouth_image[0].permute(1,2,0)*255
-           
            mouth_image = mouth_image.numpy().astype(np.uint8)
            logger.info(f"mouth_image shape before resize: {mouth_image.shape}")
+           # Initial resize to match the original face box dimensions
            mouth_image = cv2.resize(mouth_image, (self.x2 - self.x1, self.y2 - self.y1), interpolation=cv2.INTER_LANCZOS4)
-           logger.info(f"mouth_image shape after resize: {mouth_image.shape}")
+           logger.info(f"mouth_image shape after initial resize: {mouth_image.shape}")
            mouth_image = mouth_image[:,:,::-1]
-           
            if use_photo:
                user_image_path = os.path.join(self.data_dir, 'image.png')
                if os.path.exists(user_image_path):
                    full_img = cv2.cvtColor(cv2.imread(user_image_path)[:,:,0:3], cv2.COLOR_BGR2RGB)
-                   # Resize to 512x512
                    full_img = cv2.resize(full_img, (512, 512), interpolation=cv2.INTER_LANCZOS4)
-                   # Scale and cap face box coordinates
                    scale_y = 512 / self.original_height
                    scale_x = 512 / self.original_width
                    y1_scaled = int(self.y1 * scale_y)
@@ -291,54 +259,53 @@ class liteAvatar(object):
                    y2_scaled = max(y1_scaled + 1, min(512, y2_scaled))
                    x1_scaled = max(0, min(511, x1_scaled))
                    x2_scaled = max(x1_scaled + 1, min(512, x2_scaled))
-                   logger.info(f"Adjusted face box: y1={y1_scaled}, y2={y2_scaled}, x1={x1_scaled}, x2={x2_scaled}, height={y2_scaled-y1_scaled}, width={x2_scaled-x1_scaled}")
+                   # Adjust mouth_image and merge_mask to fit the capped region
+                   mouth_height = y2_scaled - y1_scaled
+                   mouth_width = x2_scaled - x1_scaled
+                   mouth_image_resized = cv2.resize(mouth_image, (mouth_width, mouth_height), interpolation=cv2.INTER_LANCZOS4)
+                   merge_mask_resized = cv2.resize(self.merge_mask, (mouth_width, mouth_height), interpolation=cv2.INTER_LANCZOS4)
+                   # Ensure the region matches the resized mouth_image
+                   if mouth_image_resized.shape[:2] == (mouth_height, mouth_width):
+                       full_img[y1_scaled:y2_scaled, x1_scaled:x2_scaled, :] = mouth_image_resized * (1 - merge_mask_resized) + full_img[y1_scaled:y2_scaled, x1_scaled:x2_scaled, :] * merge_mask_resized
+                   else:
+                       logger.error(f"Mouth image shape {mouth_image_resized.shape} does not match target region ({mouth_height}, {mouth_width})")
+                   logger.info(f"Adjusted face box: y1={y1_scaled}, y2={y2_scaled}, x1={x1_scaled}, x2={x2_scaled}, height={mouth_height}, width={mouth_width}")
                    logger.info(f"full_img region shape: {full_img[y1_scaled:y2_scaled, x1_scaled:x2_scaled, :].shape}")
-                   # Resize mouth_image and merge_mask to match adjusted region
-                   mouth_image_resized = cv2.resize(mouth_image, (x2_scaled - x1_scaled, y2_scaled - y1_scaled), interpolation=cv2.INTER_LANCZOS4)
-                   merge_mask_resized = cv2.resize(self.merge_mask, (x2_scaled - x1_scaled, y2_scaled - y1_scaled), interpolation=cv2.INTER_LANCZOS4)
-                   full_img[y1_scaled:y2_scaled, x1_scaled:x2_scaled, :] = mouth_image_resized * (1 - merge_mask_resized) + full_img[y1_scaled:y2_scaled, x1_scaled:x2_scaled, :] * merge_mask_resized
                else:
                    full_img = self.bg_data_list[bg_frame_id].copy()
            else:
                full_img = self.bg_data_list[bg_frame_id].copy()
-           
            if not use_photo:
-               full_img[self.y1:self.y2,self.x1:self.x2,:] = mouth_image * (1 - self.merge_mask) + full_img[self.y1:self.y2,self.x1:self.x2,:] * self.merge_mask
+               full_img[self.y1:self.y2, self.x1:self.x2, :] = mouth_image * (1 - self.merge_mask) + full_img[self.y1:self.y2, self.x1:self.x2, :] * self.merge_mask
            full_img = full_img.astype(np.uint8)
            return full_img, mouth_image.astype(np.uint8)
-       
+
        def interp_param(self, param_res, fps=25):
            old_len = len(param_res)
            new_len = int(old_len / 30 * fps + 0.5)
-               
            interp_list = {}
            for key in param_res[0]:
                tmp_list = []
                for ii in range(len(param_res)):
                    tmp_list.append(param_res[ii][key])
                tmp_list = np.asarray(tmp_list)
-               
                x = np.linspace(0, old_len - 1, num=old_len, endpoint=True)
                newx = np.linspace(0, old_len - 1, num=new_len, endpoint=True)
                f = interp1d(x, tmp_list)
                y = f(newx)
                interp_list[key] = y
-           
            new_param_res = []
            for ii in range(new_len):
                tmp_json = {}
                for key in interp_list:
                    tmp_json[key] = interp_list[key][ii]
                new_param_res.append(tmp_json)
-           
            return new_param_res
-       
+
        def padding_last(self, param_res, last_end=None):
            bg_param = self.neutral_pose
-           
            if last_end is None:
                last_end = len(param_res)
-           
            padding_cnt = 5
            final_end = max(last_end + 5, len(param_res))
            param_res = param_res[:last_end]
@@ -348,15 +315,13 @@ class liteAvatar(object):
                for key in param_res[-1]:
                    kk = ii - last_end
                    scale = max((padding_cnt - kk - 1) / padding_cnt, 0.0)
-                   
                    end_value = bg_param[int(key)]
                    tmp_json[key] = (param_res[-1][key] - end_value) * scale + end_value
                padding_list.append(tmp_json)
-           
            print('padding_cnt:', len(padding_list))
            param_res = param_res + padding_list
            return param_res
-       
+
        def audio2param(self, audio_file_path, prefix_padding_size=0, is_complete=False, audio_status=-1):
            logger.info("Starting audio2param")
            s = time.time()
@@ -368,15 +333,12 @@ class liteAvatar(object):
                input_audio = librosa.resample(input_audio, orig_sr=sr, target_sr=22050)
                logger.info(f"Resampling done in {time.time() - s_resample:.3f}s")
                sr = 22050
-           
            input_audio = input_audio / np.max(np.abs(input_audio))
            input_audio = librosa.effects.preemphasis(input_audio, coef=0.97)
            logger.info("Audio preprocessed")
-           
            s_inference = time.time()
            param_res, _, _ = self.audio2mouth.inference(subtitles=None, input_audio=input_audio)
            logger.info(f"audio2mouth inference done in {time.time() - s_inference:.3f}s")
-           
            sil_scale = np.zeros(len(param_res))
            s_silence = time.time()
            sound = AudioSegment.from_file(audio_file_path, format="wav")
@@ -397,30 +359,26 @@ class liteAvatar(object):
            if self.fps != 30:
                logger.info("Interpolating parameters for FPS")
                param_res = self.interp_param(param_res, fps=self.fps)
-           
            if is_complete:
                logger.info("Padding last frames")
                param_res = self.padding_last(param_res)
-               
            logger.info(f"audio2param completed in {time.time() - s:.3f}s")
            return param_res
-       
+
        def make_silence(self, param_res, sil_scale):
            bg_param = self.neutral_pose
-           
            for ii in range(len(param_res)):
                for key in param_res[ii]:
                    neu_value = bg_param[int(key)]
                    param_res[ii][key] = param_res[ii][key] * (1 - sil_scale[ii]) + neu_value * sil_scale[ii]
            return param_res
-       
+
        def handle(self, audio_file_path, result_dir, param_res=None):
            logger.info("Starting handle")
            s = time.time()
            if param_res is None:
                param_res = self.audio2param(audio_file_path)
            logger.info(f"Got {len(param_res)} parameters from audio2param")
-           
            for ii in range(len(param_res)):
                frame_id = ii
                if int(frame_id / self.bg_video_frame_count) % 2 == 0:
@@ -430,16 +388,13 @@ class liteAvatar(object):
                self.input_queue.put((param_res[ii], frame_id, ii))
                if ii % 10 == 0:
                    logger.info(f"Pushed {ii+1}/{len(param_res)} items to input_queue")
-           
            self.input_queue.put(None)
            logger.info("Pushed None to input_queue to signal end")
-           
            tmp_frame_dir = os.path.join(result_dir, 'tmp_frames')
            if os.path.exists(tmp_frame_dir):
                os.system(f'rm -rf {tmp_frame_dir}')
            os.mkdir(tmp_frame_dir)
            logger.info(f"Created tmp_frame_dir: {tmp_frame_dir}")
-           
            frame_count = 0
            while True:
                try:
@@ -456,12 +411,10 @@ class liteAvatar(object):
                except queue.Empty:
                    logger.error("output_queue.get() timed out after 30s, breaking loop")
                    break
-           
            logger.info(f"Finished writing {frame_count} frames")
            for p in self.threads_prep:
                p.join()
            logger.info("All threads joined")
-           
            logger.info(f"Result dir: {result_dir}, exists: {os.path.exists(result_dir)}")
            logger.info(f"tmp_frames dir: {tmp_frame_dir}, exists: {os.path.exists(tmp_frame_dir)}")
            tmp_frames_files = os.listdir(tmp_frame_dir) if os.path.exists(tmp_frame_dir) else []
@@ -471,7 +424,6 @@ class liteAvatar(object):
            if ffmpeg_path is None:
                logger.error("ffmpeg not found in PATH")
                raise FileNotFoundError("ffmpeg not found in PATH")
-           
            output_video = os.path.join(result_dir, 'test_demo.mp4')
            cmd = f'"{ffmpeg_path}" -r 30 -i "{tmp_frame_dir}/%05d.jpg" -i "{audio_file_path}" -framerate 30 -c:v libx264 -preset veryslow -crf 16 -pix_fmt yuv420p -b:v 12000k -c:a aac -b:a 256k -strict experimental -loglevel error "{output_video}" -y'
            logger.info(f"Running ffmpeg command: {cmd}")
@@ -482,7 +434,7 @@ class liteAvatar(object):
                logger.error(f"ffmpeg failed: {e}")
                raise
            logger.info(f"handle completed in {time.time() - s:.3f}s")
-       
+
        @staticmethod
        def read_wav_to_bytes(file_path):
            try:
@@ -494,7 +446,6 @@ class liteAvatar(object):
            except wave.Error as e:
                print(f"Error reading WAV file: {e}")
                return None
-       
 
 if __name__ == '__main__':
        import argparse
@@ -503,10 +454,7 @@ if __name__ == '__main__':
        parser.add_argument('--audio_file', type=str)
        parser.add_argument('--result_dir', type=str)
        args = parser.parse_args()
-       
        audio_file = args.audio_file
        tmp_frame_dir = args.result_dir
-       
        lite_avatar = liteAvatar(data_dir=args.data_dir, num_threads=1, generate_offline=True)
-       
        lite_avatar.handle(audio_file, tmp_frame_dir)
