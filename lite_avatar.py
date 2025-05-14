@@ -143,7 +143,6 @@ class liteAvatar(object):
                ref_img = self.image_transforms(np.uint8(image))
                encoder_input = ref_img.unsqueeze(0).float().to(self.device)
                x = self.encoder(encoder_input)
-               # Debug and handle encoder output
                logger.info(f"Encoder output type: {type(x)}, shape: {getattr(x, 'shape', 'N/A')}")
                if isinstance(x, torch.Tensor):
                    self.ref_img_list = [x.clone() for _ in range(bg_frame_cnt or 150)]
@@ -223,7 +222,11 @@ class liteAvatar(object):
                param_val.append(val)
            param_val = np.asarray(param_val)
            
-           source_img = self.generator(self.ref_img_list[bg_frame_id], torch.from_numpy(param_val).unsqueeze(0).float().to(self.device))
+           # Wrap the tensor in a list to match the generator's expected input
+           input_tensor = self.ref_img_list[bg_frame_id]
+           logger.info(f"Generator input type: {type(input_tensor)}, shape: {getattr(input_tensor, 'shape', 'N/A')}")
+           input_list = [input_tensor]  # Convert to List[Tensor]
+           source_img = self.generator(input_list, torch.from_numpy(param_val).unsqueeze(0).float().to(self.device))
            source_img = source_img.detach().to("cpu")
            
            return source_img
