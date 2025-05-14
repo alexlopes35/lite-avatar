@@ -200,10 +200,10 @@ class liteAvatar(object):
            logger.info(f"Starting face_gen_loop for thread {thread_id}")
            while True:
                try:
-                   data = in_queue.get(timeout=10)
+                   data = in_queue.get(timeout=30)
                    logger.info(f"Thread {thread_id} received data from input_queue")
                except queue.Empty:
-                   logger.warning(f"Thread {thread_id} input_queue timeout after 10s")
+                   logger.warning(f"Thread {thread_id} input_queue timeout after 30s")
                    break
                
                if data is None:
@@ -237,7 +237,7 @@ class liteAvatar(object):
                param_val.append(val)
            param_val = np.asarray(param_val)
            
-           input_list = self.ref_img_list[bg_frame_id]  # Now a list of 4 tensors
+           input_list = self.ref_img_list[bg_frame_id]
            logger.info(f"Generator input list length: {len(input_list)}, types: {[type(t) for t in input_list]}, shapes: {[t.shape for t in input_list]}")
            source_img = self.generator(input_list, torch.from_numpy(param_val).unsqueeze(0).float().to(self.device))
            source_img = source_img.detach().to("cpu")
@@ -256,7 +256,10 @@ class liteAvatar(object):
            mouth_image = mouth_image[0].permute(1,2,0)*255
            
            mouth_image = mouth_image.numpy().astype(np.uint8)
-           mouth_image = cv2.resize(mouth_image, (self.x2-self.x1, self.y2-self.y1), interpolation=cv2.INTER_LANCZOS4)
+           logger.info(f"mouth_image shape before resize: {mouth_image.shape}")
+           # Resize mouth_image to match the face box dimensions
+           mouth_image = cv2.resize(mouth_image, (self.x2 - self.x1, self.y2 - self.y1), interpolation=cv2.INTER_LANCZOS4)
+           logger.info(f"mouth_image shape after resize: {mouth_image.shape}")
            mouth_image = mouth_image[:,:,::-1]
            
            if use_photo:
