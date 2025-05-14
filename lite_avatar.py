@@ -165,13 +165,17 @@ class liteAvatar(object):
            logger.info(f'load data over in {time.time() - s}s')
        
        def face_gen_loop(self, thread_id, barrier, in_queue, out_queue):
+           logger.info(f"Starting face_gen_loop for thread {thread_id}")
            while True:
                try:
-                   data = in_queue.get()
+                   data = in_queue.get(timeout=10)  # Add timeout to prevent hanging
+                   logger.info(f"Thread {thread_id} received data from input_queue")
                except queue.Empty:
+                   logger.warning(f"Thread {thread_id} input_queue timeout after 10s")
                    break
                
                if data is None:
+                   logger.info(f"Thread {thread_id} received None, shutting down")
                    in_queue.put(None)
                    break
                
@@ -181,15 +185,17 @@ class liteAvatar(object):
                bg_frame_id = data[1]
                global_frame_id = data[2]
                
+               logger.info(f"Thread {thread_id} processing frame {global_frame_id}")
                mouth_img = self.param2img(param_res, bg_frame_id)
                full_img, mouth_img = self.merge_mouth_to_bg(mouth_img, bg_frame_id, use_photo=True)
                
-               logger.info('global_frame_id: {} in {}s'.format(global_frame_id, round(time.time() - s, 3)))
+               logger.info(f"Thread {thread_id} processed global_frame_id: {global_frame_id} in {round(time.time() - s, 3)}s")
                
                out_queue.put((global_frame_id, full_img, mouth_img))
            
            barrier.wait()
            if thread_id == 0:
+               logger.info("Thread 0 putting None to output_queue to signal completion")
                out_queue.put(None)
                
        def param2img(self, param_res, bg_frame_id, global_frame_id=0, is_idle=False):
@@ -286,20 +292,30 @@ class liteAvatar(object):
            return param_res
        
        def audio2param(self, audio_file_path, prefix_padding_size=0, is_complete=False, audio_status=-1):
+           logger.info("Starting audio2param")
+           s = time.time()
            input_audio, sr = sf.read(audio_file_path)
+           logger.info(f"Loaded audio in {time.time() - s:.3f}s, sample rate: {sr}")
            if sr != 22050:
                logger.warning(f"Input audio sample rate {sr} Hz, expected 22050 Hz, resampling")
+               s_resample = time.time()
                input_audio = librosa.resample(input_audio, orig_sr=sr, target_sr=22050)
+               logger.info(f"Resampling done in {time.time() - s_resample:.3f}s")
                sr = 22050
            
            input_audio = input_audio / np.max(np.abs(input_audio))
            input_audio = librosa.effects.preemphasis(input_audio, coef=0.97)  # Enhance audio
+           logger.info("Audio preprocessed")
            
+           s_inference = time.time()
            param_res, _, _ = self.audio2mouth.inference(subtitles=None, input_audio=input_audio)
+           logger.info(f"audio2mouth inference done in {time.time() - s_inference:.3f}s")
            
            sil_scale = np.zeros(len(param_res))
+           s_silence = time.time()
            sound = AudioSegment.from_file(audio_file_path, format="wav")
            start_end_list = detect_silence(sound, min_silence_len=200, silence_thresh=-35)
+           logger.info(f"Silence detection done in {time.time() - s_silence:.3f}s")
            if len(start_end_list) > 0:
                for start, end in start_end_list:
                    start_frame = int(start / 1000 * 30)
@@ -311,12 +327,16 @@ class liteAvatar(object):
            sil_scale = np.convolve(sil_scale, kernel, 'same')
            sil_scale = sil_scale[2:-2]
            self.make_silence(param_res, sil_scale)
+           logger.info("Silence processing completed")
            if self.fps != 30:
+               logger.info("Interpolating parameters for FPS")
                param_res = self.interp_param(param_res, fps=self.fps)
            
            if is_complete:
+               logger.info("Padding last frames")
                param_res = self.padding_last(param_res)
                
+           logger.info(f"audio2param completed in {time.time() - s:.3f}s")
            return param_res
        
        def make_silence(self, param_res, sil_scale):
@@ -329,35 +349,52 @@ class liteAvatar(object):
            return param_res
        
        def handle(self, audio_file_path, result_dir, param_res=None):
+           logger.info("Starting handle")
+           s = time.time()
            if param_res is None:
                param_res = self.audio2param(audio_file_path)
+           logger.info(f"Got {len(param_res)} parameters from audio2param")
            
            for ii in range(len(param_res)):
-               s = time.time()
                frame_id = ii
                if int(frame_id / self.bg_video_frame_count) % 2 == 0:
                    frame_id = frame_id % self.bg_video_frame_count
                else:
                    frame_id = self.bg_video_frame_count - 1 - frame_id % self.bg_video_frame_count
                self.input_queue.put((param_res[ii], frame_id, ii))
+               if ii % 10 == 0:
+                   logger.info(f"Pushed {ii+1}/{len(param_res)} items to input_queue")
            
            self.input_queue.put(None)
+           logger.info("Pushed None to input_queue to signal end")
            
            tmp_frame_dir = os.path.join(result_dir, 'tmp_frames')
            if os.path.exists(tmp_frame_dir):
                os.system(f'rm -rf {tmp_frame_dir}')
            os.mkdir(tmp_frame_dir)
+           logger.info(f"Created tmp_frame_dir: {tmp_frame_dir}")
            
+           frame_count = 0
            while True:
-               res_data = self.output_queue.get()
-               if res_data is None:
+               try:
+                   res_data = self.output_queue.get(timeout=30)  # Add timeout to prevent infinite hang
+                   if res_data is None:
+                       logger.info("Received None from output_queue, breaking loop")
+                       break
+                   global_frame_index = res_data[0]
+                   target_path = f'{tmp_frame_dir}/{str(global_frame_index+1).zfill(5)}.jpg'
+                   cv2.imwrite(target_path, res_data[1])
+                   frame_count += 1
+                   if frame_count % 10 == 0:
+                       logger.info(f"Wrote {frame_count} frames to {tmp_frame_dir}")
+               except queue.Empty:
+                   logger.error("output_queue.get() timed out after 30s, breaking loop")
                    break
-               global_frame_index = res_data[0]
-               target_path = f'{tmp_frame_dir}/{str(global_frame_index+1).zfill(5)}.jpg'
-               cv2.imwrite(target_path, res_data[1])
            
+           logger.info(f"Finished writing {frame_count} frames")
            for p in self.threads_prep:
                p.join()
+           logger.info("All threads joined")
            
            logger.info(f"Result dir: {result_dir}, exists: {os.path.exists(result_dir)}")
            logger.info(f"tmp_frames dir: {tmp_frame_dir}, exists: {os.path.exists(tmp_frame_dir)}")
@@ -378,6 +415,7 @@ class liteAvatar(object):
            except subprocess.CalledProcessError as e:
                logger.error(f"ffmpeg failed: {e}")
                raise
+           logger.info(f"handle completed in {time.time() - s:.3f}s")
        
        @staticmethod
        def read_wav_to_bytes(file_path):
