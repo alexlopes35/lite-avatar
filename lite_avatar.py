@@ -143,11 +143,29 @@ class liteAvatar(object):
                ref_img = self.image_transforms(np.uint8(image))
                encoder_input = ref_img.unsqueeze(0).float().to(self.device)
                x = self.encoder(encoder_input)
-               # Ensure x is a tensor before cloning
+               # Debug and handle encoder output
+               logger.info(f"Encoder output type: {type(x)}, shape: {getattr(x, 'shape', 'N/A')}")
                if isinstance(x, torch.Tensor):
                    self.ref_img_list = [x.clone() for _ in range(bg_frame_cnt or 150)]
+               elif isinstance(x, list) and len(x) > 0 and isinstance(x[0], torch.Tensor):
+                   logger.warning("Encoder returned a list of tensors, using first tensor")
+                   self.ref_img_list = [x[0].clone() for _ in range(bg_frame_cnt or 150)]
                else:
-                   logger.error(f"Encoder output x is not a tensor: {type(x)}")
+                   logger.error(f"Invalid encoder output: {type(x)}, falling back to ref_frames")
+                   for ii in tqdm(range(bg_frame_cnt or 150)):
+                       img_file_path = os.path.join(data_dir, 'ref_frames', f'ref_{ii:05d}.jpg')
+                       if not os.path.exists(img_file_path):
+                           logger.error(f'Reference frame not found: {img_file_path}')
+                           continue
+                       image = cv2.cvtColor(cv2.imread(img_file_path)[:,:,0:3], cv2.COLOR_BGR2RGB)
+                       image = cv2.resize(image, (512, 512), interpolation=cv2.INTER_LANCZOS4)
+                       ref_img = self.image_transforms(np.uint8(image))
+                       encoder_input = ref_img.unsqueeze(0).float().to(self.device)
+                       x = self.encoder(encoder_input)
+                       if isinstance(x, torch.Tensor):
+                           self.ref_img_list.append(x)
+                       else:
+                           logger.error(f"Ref frame encoding failed at {ii}: {type(x)}")
            else:
                logger.warning(f'No user image found at {user_image_path}, using ref_frames')
                for ii in tqdm(range(bg_frame_cnt or 150)):
@@ -168,7 +186,7 @@ class liteAvatar(object):
            logger.info(f"Starting face_gen_loop for thread {thread_id}")
            while True:
                try:
-                   data = in_queue.get(timeout=10)  # Add timeout to prevent hanging
+                   data = in_queue.get(timeout=10)
                    logger.info(f"Thread {thread_id} received data from input_queue")
                except queue.Empty:
                    logger.warning(f"Thread {thread_id} input_queue timeout after 10s")
@@ -304,7 +322,7 @@ class liteAvatar(object):
                sr = 22050
            
            input_audio = input_audio / np.max(np.abs(input_audio))
-           input_audio = librosa.effects.preemphasis(input_audio, coef=0.97)  # Enhance audio
+           input_audio = librosa.effects.preemphasis(input_audio, coef=0.97)
            logger.info("Audio preprocessed")
            
            s_inference = time.time()
@@ -377,7 +395,7 @@ class liteAvatar(object):
            frame_count = 0
            while True:
                try:
-                   res_data = self.output_queue.get(timeout=30)  # Add timeout to prevent infinite hang
+                   res_data = self.output_queue.get(timeout=30)
                    if res_data is None:
                        logger.info("Received None from output_queue, breaking loop")
                        break
