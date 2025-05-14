@@ -123,6 +123,16 @@ class liteAvatar(object):
            self.merge_mask = self.merge_mask / 255
            logger.info(f"merge_mask shape: {self.merge_mask.shape}")
            
+           # Load a sample image to determine original dimensions
+           user_image_path = os.path.join(data_dir, 'image.png')
+           if os.path.exists(user_image_path):
+               image = cv2.imread(user_image_path)[:,:,0:3]
+               self.original_height, self.original_width = image.shape[:2]
+               logger.info(f"Original image dimensions: height={self.original_height}, width={self.original_width}")
+           else:
+               logger.warning("No user image found, assuming original dimensions as 1024x1024")
+               self.original_height, self.original_width = 1024, 1024
+           
            self.frame_vid_list = []
            
            self.image_transforms = transforms.Compose(
@@ -267,9 +277,18 @@ class liteAvatar(object):
                user_image_path = os.path.join(self.data_dir, 'image.png')
                if os.path.exists(user_image_path):
                    full_img = cv2.cvtColor(cv2.imread(user_image_path)[:,:,0:3], cv2.COLOR_BGR2RGB)
+                   # Resize to 512x512
                    full_img = cv2.resize(full_img, (512, 512), interpolation=cv2.INTER_LANCZOS4)
-                   logger.info(f"full_img region shape: {full_img[self.y1:self.y2, self.x1:self.x2, :].shape}")
-                   full_img[self.y1:self.y2, self.x1:self.x2, :] = mouth_image * (1 - self.merge_mask) + full_img[self.y1:self.y2, self.x1:self.x2, :] * self.merge_mask
+                   # Scale face box coordinates
+                   scale_y = 512 / self.original_height
+                   scale_x = 512 / self.original_width
+                   y1_scaled = int(self.y1 * scale_y)
+                   y2_scaled = int(self.y2 * scale_y)
+                   x1_scaled = int(self.x1 * scale_x)
+                   x2_scaled = int(self.x2 * scale_x)
+                   logger.info(f"Scaled face box: y1={y1_scaled}, y2={y2_scaled}, x1={x1_scaled}, x2={x2_scaled}, height={y2_scaled-y1_scaled}, width={x2_scaled-x1_scaled}")
+                   logger.info(f"full_img region shape: {full_img[y1_scaled:y2_scaled, x1_scaled:x2_scaled, :].shape}")
+                   full_img[y1_scaled:y2_scaled, x1_scaled:x2_scaled, :] = mouth_image * (1 - self.merge_mask) + full_img[y1_scaled:y2_scaled, x1_scaled:x2_scaled, :] * self.merge_mask
                else:
                    full_img = self.bg_data_list[bg_frame_id].copy()
            else:
